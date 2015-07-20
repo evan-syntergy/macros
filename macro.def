@@ -1,0 +1,154 @@
+{ 
+	var _ = require( 'lodash' );
+	PPC.parseMacro = parse;
+	
+	var withoutEmptyStrings = function(a) { 
+		return _.filter( a, function( v ) { 
+			if( _.isString( v ) ) { 
+				return v !== "";
+			}
+			else if( _.isObject( v ) && _.has( v, 'value' ) ) { 
+				return v.value !== "";
+			}
+			return true;
+		} );
+	};
+
+	var makeTag = function( tag, parts ) { 
+		return { 	
+				tag: tag, 
+				type: "MACRO", 
+				text: text(), 
+				pos: offset(), 
+				parts: parts 
+			};
+	};
+
+	var makePseudoTag = function( tag, parts ) { 
+		return { 	
+				tag: tag, 
+				type: "MACRO",
+				pseudo: true,
+				text: text(), 
+				pos: offset(), 
+				parts: parts 
+			};
+	};
+
+	var addTagSuffix = function( tag, suffixes ) { 
+		var cur = tag; 
+
+		// Roll each tag into the suffix that follows.
+		_.each( suffixes, function(s) {
+			cur = {
+				tag: s.tag || s.type, 
+				suffixTag: true,
+				type: s.type,
+				parts: [ cur ].concat( s.parts ),
+				pos: s.pos,
+				text: s.text
+			};
+		} );
+		
+		tag.textWithSuffixes = text();
+		return cur;	
+	};
+	
+	var makeLiteral = function( type, val ) { 
+		return { type: type, text: text(), pos: offset(), value: val };
+	};
+}
+
+start
+  = tagLiteralMix
+
+_ = [ \t\r\n]*
+
+__ = [ \t\r\n]+
+
+tagLiteralMix 
+  = elems:topLevelElem*    								{ return withoutEmptyStrings( elems ); }
+
+topLevelElem 
+  = literal:tagBodyChar+    								{ return makeLiteral( "STRING", literal.join( "" ) ); }
+  / tag:fullTag      { return tag; }
+
+fullTag "Macro"
+  = tag:tag suffix:tagSuffix+ 								{ return addTagSuffix( tag, suffix ); }
+  / tag:tag { return tag }
+
+tag "Macro"
+  = "{" _ tagName:tagNameSpec __ body:tagBody _ "}"  			{ return makeTag( tagName, body ); }
+  / "{" _ body:tagBody _ "}"   							{ return makePseudoTag( "GROUP", body ); }
+ 
+tagNameSpec = chars:[a-zA-Z]+ 							{ return makeLiteral( "STRING", chars.join( "" ) ); } 
+
+tagBody "Macro Text"
+  = seq1:tagBodyPartSeq rest:tagBodyContList* 				{ return rest ? seq1.concat( _.flatten( rest ) ) : seq1 }
+
+tagBodyContList
+  = ',' _ seq:tagBodyPartSeq 								{ return _.flatten( seq ); }
+ 
+tagBodyPartSeq
+  = parts:tagBodyPart* 								{ return withoutEmptyStrings( parts ); }
+
+tagBodyPart 
+  = literal:tagBodyChar+ 								{ return makeLiteral( "STRING", literal.join( "" ).trim() ); }
+  / q:quote _ { return q; }
+  / subTag:fullTag 									{ return subTag; }
+  / op:operator										{ return makeLiteral( "OP", op ); }
+  
+quote "Quote"
+  = '"' content:quoteBodyPart* '"' _  						{ return makePseudoTag( "QUOTE", content ); }
+
+quoteBodyPart 
+  = lit:quoteBodyChar+ 									{ return makeLiteral( "STRING", lit.join( "" ) ); }
+  / embedded:fullTag 									{ return embedded;  }
+
+tagSuffix 
+  = range
+  / index
+  / dotSuffix
+
+dotSuffix "Dot Operator"
+  = '.' _ feature:dotVal 									{ return makePseudoTag( "DOT", [ feature ] ); }
+
+dotVal 
+  = quote
+  / featureName
+
+featureName "Feature Name"
+  = first:[_a-zA-Z] rest:[_a-zA-Z]* 						{ return makeLiteral( "STRING", first + ( rest ).join( "" ) ); }
+
+range "Range"
+  = '[' _ start:indexValue? _ ':' _ end:indexValue? _ ']' 			{ return makePseudoTag( 'RANGE', [start ? start : 1, end ? end : -1 ] ); }
+
+indexValue 
+  = number 
+  / fullTag
+  / quote
+
+index = 
+  '[' _ idx:indexValue _ ']' 								{ return makePseudoTag( 'INDEX', [idx] ); }
+
+number "Number"
+  = sign:[-+]? digits:([0-9]+) 							{ return makeLiteral( "NUMBER", parseInt( ( sign ? sign : "" ) + digits.join( "" ), 10 ) ); }
+
+operator "Operator"
+  = '==' / '=' / '!=' / '<>' / '<' / '>' / '>=' / '<='					
+
+quoteBodyChar "Quoted Text"
+  = escapedCharacter
+  / [^"{\\]
+
+tagBodyChar "Macro Body"
+  = escapedCharacter
+  / [^,{}"!=<>\\]
+  / first:'!' !'=' 										{ return first; }
+
+escapedCharacter
+  = first:'\\' second:[^ \t\r\n] 							{ return second; }
+  / first:'\\n' { return '\n'; }
+  / first:'\\r' { return '\r'; }
+
+
